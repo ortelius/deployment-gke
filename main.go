@@ -110,9 +110,7 @@ func fetchGKEAuditLogs(ctx context.Context, lastTs string) ([]Deployment, string
 	logFilter := fmt.Sprintf(`
 		resource.type="k8s_cluster"
 		logName="projects/%s/logs/cloudaudit.googleapis.com%%2Factivity"
-		(protoPayload.methodName="io.k8s.core.v1.pods.create"
-		 OR protoPayload.methodName="io.k8s.core.v1.pods.update"
-		 OR protoPayload.methodName="io.k8s.core.v1.pods.patch")
+		protoPayload.methodName="io.k8s.core.v1.pods.create"
 		timestamp >= "%s"
 	`, ProjectID, lastTs)
 

@@ -64,7 +64,7 @@ resource "google_service_account_key" "invoker_key" {
 # ---------------------------
 data "archive_file" "source_zip" {
   type        = "zip"
-  source_dir  = "${path.module}"
+  source_dir  = path.module
   output_path = "/tmp/gke2release-source.zip"
   excludes    = ["main.tf", "variables.tf", "terraform.tfvars", "terraform.tfstate", ".terraform", ".git"]
 }
