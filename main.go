@@ -48,6 +48,7 @@ type GitDetails struct {
 	URL      string `json:"url,omitempty"`
 	Vendor   string `json:"vendor,omitempty"`
 	Version  string `json:"version,omitempty"`
+	Created  string `json:"created,omitempty"`
 }
 
 var (
@@ -259,9 +260,20 @@ func processBatchSync(ctx context.Context, deployments []Deployment) {
 
 			desc, err := remote.Get(ref)
 			if err == nil && desc != nil {
-				rel.DockerSha = desc.Digest.String()
-				rel.ContentSha = desc.Digest.String()
-				log.Printf("     [*] Resolved SHA: %s", rel.DockerSha)
+				digest := desc.Digest.String()
+				rel.DockerSha = digest
+				rel.ContentSha = releaseContentSha(digest, d.Tag)
+				log.Printf("     [*] Resolved SHA: %s (content key: %s)", rel.DockerSha, rel.ContentSha)
+
+				// Pull image config to get creation timestamp (covers OCI/GCR images like kube-proxy)
+				img, ierr := desc.Image()
+				if ierr == nil {
+					cfg, cerr := img.ConfigFile()
+					if cerr == nil && !cfg.Created.Time.IsZero() {
+						rel.BuildDate = cfg.Created.Time
+						log.Printf("     [*] Image created at: %s", rel.BuildDate.Format(time.RFC3339))
+					}
+				}
 			}
 
 			gitDetails, err := extractImageLabels(imageRef)
@@ -271,6 +283,19 @@ func processBatchSync(ctx context.Context, deployments []Deployment) {
 				if gerr == nil {
 					mapGitToRelease(rel, gitMap)
 					log.Printf("     [*] Git Metadata Extracted (Commit: %s)", rel.GitCommit)
+				}
+			}
+
+			// Capture git tag from OCI label for GitHub release date lookup
+			if gitDetails != nil && gitDetails.Version != "" {
+				rel.GitTag = gitDetails.Version
+			}
+
+			// If BuildDate still not set, try GitHub release tag API
+			if rel.BuildDate.IsZero() && rel.GitTag != "" && rel.GitURL != "" {
+				if t, err := fetchGitHubTagDate(rel.GitURL, rel.GitTag); err == nil {
+					rel.BuildDate = t
+					log.Printf("     [*] Build date from GitHub tag: %s", rel.BuildDate.Format(time.RFC3339))
 				}
 			}
 
@@ -475,6 +500,8 @@ func extractImageLabels(imageRef string) (*GitDetails, error) {
 		Revision: labels["org.opencontainers.image.revision"],
 		Source:   labels["org.opencontainers.image.source"],
 		URL:      labels["org.opencontainers.image.url"],
+		Version:  labels["org.opencontainers.image.version"],
+		Created:  labels["org.opencontainers.image.created"],
 	}, nil
 }
 
@@ -484,6 +511,16 @@ func getReleaseName(image string) string {
 		return parts[len(parts)-2] + "/" + parts[len(parts)-1]
 	}
 	return image
+}
+
+// releaseContentSha is the idempotency key used by the sync API's already-ingested check.
+// The same image digest can be re-released under a new version tag, so include both
+// values to avoid skipping a distinct release that happens to share image content.
+func releaseContentSha(digest, versionTag string) string {
+	if versionTag == "" {
+		versionTag = "latest"
+	}
+	return fmt.Sprintf("%s|tag:%s", digest, versionTag)
 }
 
 func deduplicateDeployments(deployments []Deployment) []Deployment {
@@ -497,6 +534,64 @@ func deduplicateDeployments(deployments []Deployment) []Deployment {
 		}
 	}
 	return unique
+}
+
+// fetchGitHubTagDate resolves the creation date of a git tag via the GitHub API.
+// It first tries the Releases API (formal releases), then falls back to the Tags API
+// for lightweight/annotated tags that are not formal releases.
+func fetchGitHubTagDate(gitURL, tag string) (time.Time, error) {
+	repo := strings.TrimPrefix(gitURL, "https://github.com/")
+	repo = strings.TrimSuffix(repo, ".git")
+
+	doRequest := func(url string) (*http.Response, error) {
+		req, err := http.NewRequest("GET", url, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Accept", "application/vnd.github.v3+json")
+		if token := os.Getenv("GITHUB_TOKEN"); token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		client := &http.Client{Timeout: 10 * time.Second}
+		return client.Do(req)
+	}
+
+	// Try formal release first
+	resp, err := doRequest(fmt.Sprintf("https://api.github.com/repos/%s/releases/tags/%s", repo, tag))
+	if err != nil {
+		return time.Time{}, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		// Not a formal release — fall back to tags API
+		resp2, err := doRequest(fmt.Sprintf("https://api.github.com/repos/%s/git/refs/tags/%s", repo, tag))
+		if err != nil {
+			return time.Time{}, err
+		}
+		defer resp2.Body.Close()
+		var result struct {
+			CreatedAt time.Time `json:"created_at"`
+		}
+		if err := json.NewDecoder(resp2.Body).Decode(&result); err != nil {
+			return time.Time{}, err
+		}
+		if result.CreatedAt.IsZero() {
+			return time.Time{}, fmt.Errorf("no created_at in tags API response")
+		}
+		return result.CreatedAt, nil
+	}
+
+	var result struct {
+		CreatedAt time.Time `json:"created_at"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return time.Time{}, err
+	}
+	if result.CreatedAt.IsZero() {
+		return time.Time{}, fmt.Errorf("no created_at in releases API response")
+	}
+	return result.CreatedAt, nil
 }
 
 func getEnv(key, fallback string) string {

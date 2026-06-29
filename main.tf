@@ -108,8 +108,8 @@ resource "google_cloudfunctions2_function" "gke2release_func" {
   service_config {
     service_account_email = google_service_account.function_sa.email
     ingress_settings      = "ALLOW_ALL"
-    available_memory      = "4096Mi"
-    available_cpu         = "1"
+    available_memory = "8192Mi" # 8 GiB
+    available_cpu    = "2"
     timeout_seconds       = 900
 
     # Base + ORG environment variables
