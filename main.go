@@ -299,22 +299,28 @@ func processBatchSync(ctx context.Context, deployments []Deployment) {
 				}
 			}
 
-			content, err := extractSBOMFromCosignAttestation(ref)
-			if err == nil && len(content) > 0 {
-				log.Printf("     [*] Attestation found; extracting SBOM")
-			} else {
-				log.Printf("     [*] No attestation; generating SBOM via Syft...")
-				content, _ = generateSBOMFromImage(ctx, imageRef)
-			}
-
-			if len(content) > 0 {
-				log.Printf("     [+] SBOM successfully attached (%d bytes)", len(content))
-				sbom := model.NewSBOM()
-				sbom.Content = json.RawMessage(content)
-				syncs = append(syncs, model.ReleaseSync{Release: *rel, SBOM: sbom})
-			} else {
-				log.Printf("     [-] Proceeding without SBOM")
+			// CHECK FOR DUPLICATES BEFORE RUNNING SYFT
+			if checkReleaseExists(rel.ContentSha) {
+				log.Printf("     [*] Image already ingested. Skipping SBOM generation to prevent duplicate syncs.")
 				syncs = append(syncs, model.ReleaseSync{Release: *rel})
+			} else {
+				content, err := extractSBOMFromCosignAttestation(ref)
+				if err == nil && len(content) > 0 {
+					log.Printf("     [*] Attestation found; extracting SBOM")
+				} else {
+					log.Printf("     [*] No attestation; generating SBOM via Syft...")
+					content, _ = generateSBOMFromImage(ctx, imageRef)
+				}
+
+				if len(content) > 0 {
+					log.Printf("     [+] SBOM successfully attached (%d bytes)", len(content))
+					sbom := model.NewSBOM()
+					sbom.Content = json.RawMessage(content)
+					syncs = append(syncs, model.ReleaseSync{Release: *rel, SBOM: sbom})
+				} else {
+					log.Printf("     [-] Proceeding without SBOM")
+					syncs = append(syncs, model.ReleaseSync{Release: *rel})
+				}
 			}
 		}
 
@@ -618,4 +624,15 @@ func getEnvInt(key string, fallback int) int {
 		}
 	}
 	return fallback
+}
+
+// checkReleaseExists checks the backend API to see if the release contents have already been processed
+func checkReleaseExists(contentSha string) bool {
+	url := fmt.Sprintf("%s/api/v1/releases/exists?contentsha=%s", BaseURL, contentSha)
+	resp, err := http.Get(url)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
 }
