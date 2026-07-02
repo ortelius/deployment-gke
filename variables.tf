@@ -13,7 +13,6 @@ variable "org_mappings" {
   type        = map(string)
   description = "Mapping of cluster/namespace to org. Keys are 'cluster/namespace', values are org names."
   default = {
-    "cluster-2/default" = "ortelius"
-    "cluster-2/deployhub"    = "deployhub"
+    "deployhub/ortelius"    = "deployhub"
   }
 }

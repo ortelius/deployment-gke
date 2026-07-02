@@ -6,12 +6,15 @@ A Google Cloud Function that automatically detects new pod deployments in GKE cl
 
 - Polls GCP Cloud Audit Logs for `pods.create` events across all GKE clusters in a project
 - Extracts image references, tags, namespaces, and cluster names from each pod creation event
+- Deduplicates against existing releases via the backend's `GET /api/v1/releases/exists` check (by content SHA) before doing any expensive work
 - Resolves image digest (SHA) from the container registry
 - Reads OCI image labels (`org.opencontainers.image.*`) to extract Git source URL and commit SHA
 - Clones the Git repository to enrich the release with branch and commit timestamp
-- Attempts to fetch a CycloneDX SBOM from a Cosign attestation attached to the image; falls back to generating one on-the-fly using [Syft](https://github.com/anchore/syft)
+- Attempts to fetch a CycloneDX SBOM from a Cosign attestation attached to the image; falls back to generating one on-the-fly using [Syft](https://github.com/anchore/syft) — skipped entirely for images already known to the backend
 - Maps cluster/namespace pairs to organization names via environment variables
-- POSTs all release data in a single batch to the DeployHub sync API
+- Groups deployments by `cluster/namespace` and POSTs one sync batch per group to the DeployHub sync API (not a single batch across all clusters)
+
+> **Known issue:** the endpoint created for each cluster/namespace group is currently sent with a hardcoded `endpoint_type` of `"3"`, which doesn't match any of the backend's valid `EndpointType` values (`cluster`, `eks`, `gke`, `aks`, `ecs`, `fargate`, `lambda`, `edge`, `iot`, `mission_asset`, `ec2`). This likely needs a fix (probably intended to be `"gke"`) — until then, expect these endpoints to not filter/display correctly by type in the dashboard.
 
 ## Architecture
 
@@ -48,18 +51,18 @@ cd <repo-directory>
 
 ### 2. Configure variables
 
-Copy and edit the tfvars file:
+No `terraform.tfvars.example` ships with this repo — `terraform.tfvars` is already checked directly into the repo. Edit it in place with your own project's values rather than copying an example file:
 
 ```bash
-cp terraform.tfvars.example terraform.tfvars
+$EDITOR terraform.tfvars
 ```
-
-Edit `terraform.tfvars`:
 
 ```hcl
 project_id = "your-gcp-project-id"
 region     = "us-central1"
 ```
+
+> The checked-in `terraform.tfvars` currently contains what appears to be a real GCP project ID from prior testing — make sure to replace it with your own before running `terraform apply`.
 
 Optionally override org mappings in `variables.tf` or your tfvars:
 
@@ -129,6 +132,12 @@ The function's service account needs
 The invoker service account needs:
 
 - `roles/run.invoker` — to call the deployed Cloud Run function
+
+> Container registry access (image digest resolution, OCI label reads, Cosign attestation lookups) relies on ambient/default credentials rather than an explicit IAM binding in Terraform — for private registries outside the project's default access, you may need to grant the function's service account additional registry read permissions yourself.
+
+## Resource Configuration
+
+Terraform provisions the function as Cloud Run (Gen 2) with `available_memory = "8192Mi"` (8 GiB) and `timeout_seconds = 900` (15 minutes) — sized for the SBOM generation and git-clone work `generateSBOMFromImage`/`deriveGitValues` do per invocation. `ingress_settings` is `ALLOW_ALL`, so the function is reachable over HTTP without a VPC restriction; `roles/run.invoker` is still required to actually call it.
 
 ## Development
 
