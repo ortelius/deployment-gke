@@ -35,6 +35,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/ortelius/ortelius/v12/model"
+	"github.com/ortelius/ortelius/v12/util"
 )
 
 // GitDetails represents metadata extracted from OCI image labels
@@ -52,7 +53,7 @@ type GitDetails struct {
 }
 
 var (
-	BaseURL         = getEnv("DEPLOYHUB_URL", "https://app.deployhub.com")
+	BaseURL         = util.GetEnvDefault("DEPLOYHUB_URL", "https://app.deployhub.com")
 	SyncAPIURL      = BaseURL + "/api/v1/sync"
 	ProjectID       = os.Getenv("GCP_PROJECT")
 	LookbackMinutes = getEnvInt("LOOKBACK_MINUTES", 30)
@@ -598,13 +599,6 @@ func fetchGitHubTagDate(gitURL, tag string) (time.Time, error) {
 		return time.Time{}, fmt.Errorf("no created_at in releases API response")
 	}
 	return result.CreatedAt, nil
-}
-
-func getEnv(key, fallback string) string {
-	if v, ok := os.LookupEnv(key); ok {
-		return v
-	}
-	return fallback
 }
 
 func getEnvBool(key string, fallback bool) bool {
